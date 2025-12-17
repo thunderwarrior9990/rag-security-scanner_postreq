@@ -1,0 +1,14 @@
+# Simple URL list for RAG Security Scanner
+# One URL per line, optionally prefix with HTTP method
+
+# POST requests (default)
+https://api.openai.com/v1/chat/completions
+https://api.example.com/v1/chat
+
+# GET requests
+GET https://api.example.com/search
+GET https://myapp.com/api/query
+
+# Custom AI endpoints
+POST https://huggingface.co/api/inference
+POST https://custom-llm.example.com/generate
