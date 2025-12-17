@@ -12,8 +12,9 @@ import time
 import hashlib
 import requests
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, asdict
+from typing import List, Dict, Optional, Tuple, Union
+from dataclasses import dataclass, asdict, field
+from urllib.parse import urlencode, urlparse, parse_qs
 
 # Optional dependencies for advanced functions
 try:
@@ -66,6 +67,171 @@ class ScanResult:
     recommendations: List[str]
 
 
+@dataclass
+class RequestConfig:
+    """Request configuration for flexible API testing"""
+    method: str = "POST"  # GET or POST
+    param_name: str = "prompt"  # Parameter name where payload will be inserted
+    url: str = None
+    headers: Dict[str, str] = field(default_factory=dict)
+    additional_params: Dict[str, any] = field(default_factory=dict)
+    body_template: Dict[str, any] = field(default_factory=dict)
+    api_format: str = "auto"  # auto, openai, generic, custom
+    
+    def __post_init__(self):
+        """Set default headers if not provided"""
+        if not self.headers:
+            self.headers = {"Content-Type": "application/json"}
+
+
+class RequestFileParser:
+    """Parser for loading requests from text files"""
+    
+    @staticmethod
+    def parse_request_file(file_path: str) -> List[RequestConfig]:
+        """
+        Parse requests from a text file
+        
+        Supported formats:
+        1. Simple URLs (one per line)
+        2. HTTP request format (raw HTTP)
+        3. JSON configuration format
+        
+        Returns:
+            List of RequestConfig objects
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Request file not found: {file_path}")
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Try to parse as JSON first
+        try:
+            return RequestFileParser._parse_json_format(content)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to parse as raw HTTP request
+        if content.strip().startswith(('GET ', 'POST ', 'PUT ', 'PATCH ', 'DELETE ')):
+            return RequestFileParser._parse_http_format(content)
+        
+        # Parse as simple URL list
+        return RequestFileParser._parse_url_list(content)
+    
+    @staticmethod
+    def _parse_json_format(content: str) -> List[RequestConfig]:
+        """Parse JSON format request configuration"""
+        data = json.loads(content)
+        
+        configs = []
+        if isinstance(data, list):
+            for item in data:
+                configs.append(RequestFileParser._dict_to_config(item))
+        elif isinstance(data, dict):
+            configs.append(RequestFileParser._dict_to_config(data))
+        
+        return configs
+    
+    @staticmethod
+    def _dict_to_config(data: Dict) -> RequestConfig:
+        """Convert dictionary to RequestConfig"""
+        return RequestConfig(
+            method=data.get('method', 'POST'),
+            param_name=data.get('param_name', 'prompt'),
+            url=data.get('url'),
+            headers=data.get('headers', {}),
+            additional_params=data.get('additional_params', {}),
+            body_template=data.get('body_template', {}),
+            api_format=data.get('api_format', 'auto')
+        )
+    
+    @staticmethod
+    def _parse_http_format(content: str) -> List[RequestConfig]:
+        """Parse raw HTTP request format"""
+        configs = []
+        
+        # Split multiple requests if separated by blank lines
+        requests_raw = content.strip().split('\n\n\n')
+        
+        for req_text in requests_raw:
+            if not req_text.strip():
+                continue
+            
+            lines = req_text.strip().split('\n')
+            if not lines:
+                continue
+            
+            # Parse request line
+            request_line = lines[0].split()
+            if len(request_line) < 2:
+                continue
+            
+            method = request_line[0].upper()
+            url = request_line[1]
+            
+            # Parse headers
+            headers = {}
+            body_start = 1
+            for i, line in enumerate(lines[1:], 1):
+                if not line.strip():
+                    body_start = i + 1
+                    break
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    headers[key.strip()] = value.strip()
+            
+            # Parse body
+            body = {}
+            if body_start < len(lines):
+                body_text = '\n'.join(lines[body_start:])
+                if body_text.strip():
+                    try:
+                        body = json.loads(body_text)
+                    except json.JSONDecodeError:
+                        # If not JSON, treat as form data
+                        body = {'data': body_text}
+            
+            config = RequestConfig(
+                method=method,
+                url=url,
+                headers=headers,
+                body_template=body,
+                api_format='custom'
+            )
+            configs.append(config)
+        
+        return configs
+    
+    @staticmethod
+    def _parse_url_list(content: str) -> List[RequestConfig]:
+        """Parse simple URL list (one per line)"""
+        configs = []
+        
+        for line in content.strip().split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            # Check if line contains method specification
+            if line.upper().startswith(('GET ', 'POST ')):
+                parts = line.split(None, 1)
+                method = parts[0].upper()
+                url = parts[1] if len(parts) > 1 else ""
+            else:
+                method = "POST"
+                url = line
+            
+            config = RequestConfig(
+                method=method,
+                url=url,
+                api_format='auto'
+            )
+            configs.append(config)
+        
+        return configs
+
+
 class RAGSecurityScanner:
     """
     Comprehensive security scanner for RAG systems
@@ -82,7 +248,9 @@ class RAGSecurityScanner:
                  target_url: str = None,
                  api_key: str = None,
                  timeout: int = 30,
-                 delay_between_requests: float = 3.0):
+                 delay_between_requests: float = 3.0,
+                 request_config: RequestConfig = None,
+                 request_file: str = None):
         """
         Scanner initialization
 
@@ -91,12 +259,34 @@ class RAGSecurityScanner:
             api_key: API key for authentication
             timeout: Request timeout in seconds
             delay_between_requests: Delay between requests
+            request_config: RequestConfig object for custom request configuration
+            request_file: Path to file containing request configurations
         """
         self.target_url = target_url
         self.api_key = api_key
         self.timeout = timeout
         self.delay = delay_between_requests
         self.scan_id = self._generate_scan_id()
+
+        # Request configuration
+        if request_file:
+            self.request_configs = RequestFileParser.parse_request_file(request_file)
+            if self.request_configs and not target_url:
+                self.target_url = self.request_configs[0].url
+        elif request_config:
+            self.request_configs = [request_config]
+        else:
+            # Default configuration for OpenAI-style APIs
+            self.request_configs = [RequestConfig(
+                method="POST",
+                param_name="prompt",
+                url=target_url,
+                api_format="openai"
+            )]
+        
+        # Update target URL from config if not provided
+        if not self.target_url and self.request_configs:
+            self.target_url = self.request_configs[0].url
 
         # Statistics
         self.total_requests = 0
@@ -110,10 +300,12 @@ class RAGSecurityScanner:
         # Load test payloads
         self.payloads = self._load_payloads()
 
-        print("RAG Security Scanner v1.0")
+        print("RAG Security Scanner v2.0")
         print(f"Scan ID: {self.scan_id}")
-        if target_url:
-            print(f"Target: {target_url}")
+        if self.target_url:
+            print(f"Target: {self.target_url}")
+        print(f"Request Method(s): {', '.join(set(cfg.method for cfg in self.request_configs))}")
+        print(f"Payload Parameter(s): {', '.join(set(cfg.param_name for cfg in self.request_configs))}")
 
     def _generate_scan_id(self) -> str:
         """Generates unique scan ID"""
@@ -222,9 +414,14 @@ class RAGSecurityScanner:
             ]
         }
 
-    def _make_request(self, payload: str, headers: Dict = None) -> Tuple[bool, str, float]:
+    def _make_request(self, payload: str, headers: Dict = None, config_index: int = 0) -> Tuple[bool, str, float]:
         """
-        Executes request to target system
+        Executes request to target system with flexible configuration
+
+        Args:
+            payload: The test payload to send
+            headers: Optional custom headers
+            config_index: Index of request config to use (for multiple configs)
 
         Returns:
             (success, response, response_time)
@@ -234,54 +431,204 @@ class RAGSecurityScanner:
             time.sleep(0.1)
             return True, f"Demo response to: {payload[:50]}...", 0.1
 
+        # Get request configuration
+        config = self.request_configs[config_index] if config_index < len(self.request_configs) else self.request_configs[0]
+        
         start_time = time.time()
 
         try:
-            # Request preparation - Format for OpenAI Chat Completions API
-            request_data = {
-                "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": payload}],
-                "max_tokens": 150
-            }
-
-            if headers is None:
-                headers = {"Content-Type": "application/json"}
-
+            # Merge headers
+            request_headers = dict(config.headers)
+            if headers:
+                request_headers.update(headers)
+            
+            # Add API key to headers if provided
             if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-
-            # Request execution
-            response = requests.post(
-                self.target_url,
-                json=request_data,
-                headers=headers,
-                timeout=self.timeout
-            )
-
-            response_time = time.time() - start_time
-            self.total_requests += 1
-
-            if response.status_code == 200:
-                self.successful_requests += 1
-                try:
-                    # Parse OpenAI API response
-                    response_data = response.json()
-                    if "choices" in response_data and len(response_data["choices"]) > 0:
-                        content = response_data["choices"][0]["message"]["content"]
-                        return True, content, response_time
-                    else:
-                        return True, response.text, response_time
-                except:
-                    # Fallback to raw text if JSON parsing fails
-                    return True, response.text, response_time
-            else:
-                self.failed_requests += 1
-                return False, f"HTTP {response.status_code}: {response.text}", response_time
+                if 'Authorization' not in request_headers:
+                    request_headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            # Determine target URL
+            target_url = config.url if config.url else self.target_url
+            
+            # Prepare request based on method and format
+            if config.method.upper() == "GET":
+                success, response_text, response_time = self._make_get_request(
+                    target_url, payload, config, request_headers, start_time
+                )
+            else:  # POST, PUT, PATCH, etc.
+                success, response_text, response_time = self._make_post_request(
+                    target_url, payload, config, request_headers, start_time
+                )
+            
+            return success, response_text, response_time
 
         except Exception as e:
             response_time = time.time() - start_time
             self.failed_requests += 1
-            return False, str(e), response_time
+            return False, f"Request error: {str(e)}", response_time
+    
+    def _make_get_request(self, url: str, payload: str, config: RequestConfig, 
+                          headers: Dict, start_time: float) -> Tuple[bool, str, float]:
+        """Execute GET request with payload in query parameters"""
+        try:
+            # Build query parameters
+            params = dict(config.additional_params)
+            params[config.param_name] = payload
+            
+            # Execute GET request
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=self.timeout
+            )
+            
+            response_time = time.time() - start_time
+            self.total_requests += 1
+            
+            return self._process_response(response, response_time)
+            
+        except Exception as e:
+            response_time = time.time() - start_time
+            self.failed_requests += 1
+            return False, f"GET request failed: {str(e)}", response_time
+    
+    def _make_post_request(self, url: str, payload: str, config: RequestConfig,
+                           headers: Dict, start_time: float) -> Tuple[bool, str, float]:
+        """Execute POST request with payload in body"""
+        try:
+            # Prepare request body based on API format
+            if config.api_format == "openai" or (config.api_format == "auto" and "openai" in url.lower()):
+                request_data = {
+                    "model": config.additional_params.get("model", "gpt-3.5-turbo"),
+                    "messages": [{"role": "user", "content": payload}],
+                    "max_tokens": config.additional_params.get("max_tokens", 150)
+                }
+                # Merge additional params
+                for key, value in config.additional_params.items():
+                    if key not in ["model", "max_tokens"]:
+                        request_data[key] = value
+            
+            elif config.body_template:
+                # Use custom body template and insert payload
+                request_data = dict(config.body_template)
+                self._insert_payload_in_dict(request_data, config.param_name, payload)
+            
+            else:
+                # Generic format - put payload in specified parameter
+                request_data = dict(config.additional_params)
+                request_data[config.param_name] = payload
+            
+            # Execute POST request
+            if headers.get("Content-Type") == "application/json":
+                response = requests.post(
+                    url,
+                    json=request_data,
+                    headers=headers,
+                    timeout=self.timeout
+                )
+            else:
+                # For non-JSON content types
+                response = requests.post(
+                    url,
+                    data=request_data,
+                    headers=headers,
+                    timeout=self.timeout
+                )
+            
+            response_time = time.time() - start_time
+            self.total_requests += 1
+            
+            return self._process_response(response, response_time)
+            
+        except Exception as e:
+            response_time = time.time() - start_time
+            self.failed_requests += 1
+            return False, f"POST request failed: {str(e)}", response_time
+    
+    def _insert_payload_in_dict(self, data: Dict, param_path: str, payload: str):
+        """
+        Insert payload into nested dictionary using dot notation
+        Example: "messages.0.content" -> data["messages"][0]["content"] = payload
+        """
+        keys = param_path.split('.')
+        current = data
+        
+        for i, key in enumerate(keys[:-1]):
+            # Determine if next key is an array index
+            next_key = keys[i + 1] if i + 1 < len(keys) else None
+            is_next_array = next_key and next_key.isdigit()
+            
+            # Handle array indices
+            if key.isdigit():
+                key = int(key)
+                # Ensure list has enough elements
+                while len(current) <= key:
+                    if is_next_array:
+                        current.append([])
+                    else:
+                        current.append({})
+            else:
+                if key not in current:
+                    # Create nested structure based on next key
+                    if is_next_array:
+                        current[key] = []
+                    else:
+                        current[key] = {}
+            
+            current = current[key]
+        
+        # Set the final value
+        final_key = keys[-1]
+        if final_key.isdigit():
+            final_key = int(final_key)
+            # Ensure list has enough elements
+            if isinstance(current, list):
+                while len(current) <= final_key:
+                    current.append(None)
+        
+        current[final_key] = payload
+    
+    def _process_response(self, response: requests.Response, response_time: float) -> Tuple[bool, str, float]:
+        """Process HTTP response and extract content"""
+        if response.status_code in [200, 201]:
+            self.successful_requests += 1
+            try:
+                # Try to parse as JSON
+                response_data = response.json()
+                
+                # Handle OpenAI format
+                if "choices" in response_data and len(response_data["choices"]) > 0:
+                    if "message" in response_data["choices"][0]:
+                        content = response_data["choices"][0]["message"]["content"]
+                    elif "text" in response_data["choices"][0]:
+                        content = response_data["choices"][0]["text"]
+                    else:
+                        content = str(response_data["choices"][0])
+                    return True, content, response_time
+                
+                # Handle other common response formats
+                elif "response" in response_data:
+                    return True, str(response_data["response"]), response_time
+                elif "answer" in response_data:
+                    return True, str(response_data["answer"]), response_time
+                elif "result" in response_data:
+                    return True, str(response_data["result"]), response_time
+                elif "output" in response_data:
+                    return True, str(response_data["output"]), response_time
+                elif "text" in response_data:
+                    return True, str(response_data["text"]), response_time
+                elif "content" in response_data:
+                    return True, str(response_data["content"]), response_time
+                else:
+                    # Return entire JSON as string
+                    return True, json.dumps(response_data, indent=2), response_time
+            except:
+                # Fallback to raw text if JSON parsing fails
+                return True, response.text, response_time
+        else:
+            self.failed_requests += 1
+            return False, f"HTTP {response.status_code}: {response.text[:200]}", response_time
 
     def _analyze_response(self, payload: str, response: str, category: str) -> Optional[SecurityThreat]:
         """
@@ -967,15 +1314,25 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="RAG Security Scanner - Automated security testing for RAG systems",
+        description="RAG Security Scanner - Automated security testing for RAG/LLM systems",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Demo mode (no target URL)
   python rag_scanner.py --demo
   
-  # Scan specific endpoint
+  # Scan specific endpoint with POST
   python rag_scanner.py --url https://api.example.com/chat --api-key YOUR_KEY
+  
+  # Scan with GET request and custom parameter
+  python rag_scanner.py --url https://api.example.com/query --method GET --param query
+  
+  # Scan with custom POST body and specific parameter
+  python rag_scanner.py --url https://api.example.com/ai --method POST --param user_input \\
+      --body-param model=gpt-4 --body-param temperature=0.7
+  
+  # Load requests from file
+  python rag_scanner.py --request-file requests.txt --scan-type full
   
   # Full scan with custom settings
   python rag_scanner.py --url https://api.example.com/chat --timeout 60 --delay 2
@@ -985,24 +1342,43 @@ Examples:
         """
     )
 
+    # Target configuration
     parser.add_argument('--url', '-u',
-                       help='Target RAG system URL')
+                       help='Target RAG/LLM system URL')
     parser.add_argument('--api-key', '-k',
                        help='API key for authentication')
+    
+    # Request configuration
+    parser.add_argument('--method', '-m', choices=['GET', 'POST', 'PUT', 'PATCH'],
+                       default='POST', help='HTTP method (default: POST)')
+    parser.add_argument('--param', '-p', default='prompt',
+                       help='Parameter name where payload is inserted (default: prompt)')
+    parser.add_argument('--body-param', action='append', dest='body_params',
+                       help='Additional body/query parameters (format: key=value). Can be used multiple times.')
+    parser.add_argument('--header', action='append', dest='custom_headers',
+                       help='Custom headers (format: key=value). Can be used multiple times.')
+    parser.add_argument('--api-format', choices=['auto', 'openai', 'generic', 'custom'],
+                       default='auto', help='API format (default: auto)')
+    parser.add_argument('--request-file', '-r',
+                       help='Path to file containing request configurations')
+    
+    # Scan configuration
     parser.add_argument('--timeout', '-t', type=int, default=30,
                        help='Request timeout in seconds (default: 30)')
     parser.add_argument('--delay', '-d', type=float, default=1.0,
                        help='Delay between requests in seconds (default: 1.0)')
-    parser.add_argument('--format', '-f', choices=['json', 'html'], default='json',
-                       help='Output format (default: json)')
-    parser.add_argument('--demo', action='store_true',
-                       help='Run in demo mode without real target')
     parser.add_argument('--scan-type', choices=['full', 'prompt', 'data', 'function', 'context'],
                        default='full', help='Type of scan to perform (default: full)')
+    
+    # Output configuration
+    parser.add_argument('--format', '-f', choices=['json', 'html'], default='json',
+                       help='Output format (default: json)')
     parser.add_argument('--output', '-o',
                        help='Output filename (auto-generated if not specified)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Verbose output')
+    parser.add_argument('--demo', action='store_true',
+                       help='Run in demo mode without real target')
 
     args = parser.parse_args()
 
@@ -1010,12 +1386,48 @@ Examples:
     target_url = args.url or os.getenv('TARGET_URL')
     api_key = args.api_key or os.getenv('OPENAI_API_KEY')
     
+    # Parse additional body parameters
+    additional_params = {}
+    if args.body_params:
+        for param in args.body_params:
+            if '=' in param:
+                key, value = param.split('=', 1)
+                # Try to parse as JSON value
+                try:
+                    additional_params[key] = json.loads(value)
+                except:
+                    additional_params[key] = value
+    
+    # Parse custom headers
+    custom_headers = {}
+    if args.custom_headers:
+        for header in args.custom_headers:
+            if '=' in header:
+                key, value = header.split('=', 1)
+                custom_headers[key] = value
+    
+    # Create request configuration
+    request_config = None
+    request_file = args.request_file
+    
+    if not request_file and target_url:
+        request_config = RequestConfig(
+            method=args.method,
+            param_name=args.param,
+            url=target_url,
+            headers=custom_headers if custom_headers else {"Content-Type": "application/json"},
+            additional_params=additional_params,
+            api_format=args.api_format
+        )
+    
     # Create scanner
     scanner = RAGSecurityScanner(
         target_url=target_url,
         api_key=api_key,
         timeout=args.timeout,
-        delay_between_requests=args.delay
+        delay_between_requests=args.delay,
+        request_config=request_config,
+        request_file=request_file
     )
 
     # Perform scan

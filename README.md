@@ -151,6 +151,8 @@ pytest tests/test_payloads.py -v
 
 ## 📋 Configuration Options
 
+### Basic Options
+
 ```bash
 python src/rag_scanner.py \
     --url https://api.example.com/chat \    # Target URL
@@ -161,6 +163,39 @@ python src/rag_scanner.py \
     --timeout 60 \                         # Request timeout
     --output custom_report.json \          # Output filename
     --verbose                              # Detailed output
+```
+
+### Advanced Request Configuration
+
+```bash
+# POST request with custom parameter
+python src/rag_scanner.py \
+    --url https://api.example.com/ai \
+    --method POST \
+    --param user_input \
+    --body-param model=gpt-4 \
+    --body-param temperature=0.7
+
+# GET request with query parameters
+python src/rag_scanner.py \
+    --url https://api.example.com/search \
+    --method GET \
+    --param query \
+    --body-param limit=10 \
+    --body-param format=json
+
+# Custom headers
+python src/rag_scanner.py \
+    --url https://api.example.com/chat \
+    --method POST \
+    --param prompt \
+    --header "X-API-Version=2.0" \
+    --header "X-Custom-Header=test"
+
+# Load requests from file
+python src/rag_scanner.py \
+    --request-file examples/requests_json.json \
+    --scan-type full
 ```
 
 ## 🔍 Vulnerability Categories
@@ -215,6 +250,121 @@ json:
   ]
 }
 ```
+
+## 📝 Request File Formats
+
+The scanner supports three request file formats:
+
+### 1. Simple URL List (`requests_simple.txt`)
+
+```text
+# One URL per line, optionally prefix with method
+POST https://api.example.com/chat
+GET https://api.example.com/search
+https://api.openai.com/v1/chat/completions
+```
+
+### 2. JSON Configuration (`requests_json.json`)
+
+```json
+[
+  {
+    "method": "POST",
+    "url": "https://api.example.com/chat",
+    "param_name": "user_message",
+    "api_format": "generic",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "additional_params": {
+      "model": "gpt-4",
+      "temperature": 0.7
+    }
+  }
+]
+```
+
+### 3. HTTP Request Format (`requests_http.txt`)
+
+```http
+POST https://api.example.com/chat HTTP/1.1
+Content-Type: application/json
+Authorization: Bearer YOUR_KEY
+
+{
+  "prompt": "PAYLOAD",
+  "model": "gpt-3.5-turbo"
+}
+```
+
+## 🎯 Usage Examples
+
+### Example 1: Test OpenAI API
+
+```bash
+python src/rag_scanner.py \
+    --url https://api.openai.com/v1/chat/completions \
+    --api-key sk-your-key \
+    --method POST \
+    --api-format openai \
+    --scan-type full
+```
+
+### Example 2: Test Custom RAG System with GET
+
+```bash
+python src/rag_scanner.py \
+    --url https://my-rag.example.com/search \
+    --method GET \
+    --param query \
+    --body-param max_results=5 \
+    --scan-type prompt
+```
+
+### Example 3: Test Multiple Endpoints
+
+```bash
+python src/rag_scanner.py \
+    --request-file examples/requests_json.json \
+    --scan-type full \
+    --format html \
+    --delay 2.0
+```
+
+### Example 4: Custom API with Nested Parameters
+
+```bash
+# For APIs that expect nested JSON like:
+# {"query": {"text": "...", "type": "natural"}}
+python src/rag_scanner.py \
+    --url https://api.example.com/ask \
+    --method POST \
+    --param query.text \
+    --body-param query.type=natural
+```
+
+### Example 5: Test AI API with Custom Headers
+
+```bash
+python src/rag_scanner.py \
+    --url https://custom-llm.example.com/generate \
+    --method POST \
+    --param prompt \
+    --header "X-API-Version=2.0" \
+    --header "X-Model=custom-gpt" \
+    --body-param temperature=0.5 \
+    --body-param max_tokens=200
+```
+
+## 🔌 Supported API Formats
+
+| API Type | Method | Parameter | Example |
+|----------|--------|-----------|---------|
+| OpenAI Chat | POST | messages | `--api-format openai` |
+| Generic REST | POST/GET | custom | `--param user_input` |
+| HuggingFace | POST | inputs | `--param inputs` |
+| Custom RAG | POST/GET | custom | `--param question` |
+| Search APIs | GET | query | `--method GET --param query` |
 
 ## 🤝 Contributing
 

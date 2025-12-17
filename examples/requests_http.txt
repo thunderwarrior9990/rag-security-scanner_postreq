@@ -1,0 +1,25 @@
+POST https://api.example.com/v1/chat HTTP/1.1
+Content-Type: application/json
+Authorization: Bearer YOUR_API_KEY_HERE
+X-Custom-Header: test-value
+
+{
+  "model": "gpt-3.5-turbo",
+  "messages": [{"role": "user", "content": "PAYLOAD"}],
+  "max_tokens": 150
+}
+
+
+GET https://api.example.com/search?limit=10 HTTP/1.1
+Accept: application/json
+X-API-Key: YOUR_KEY_HERE
+
+
+POST https://custom-ai.example.com/generate HTTP/1.1
+Content-Type: application/json
+
+{
+  "prompt": "PAYLOAD",
+  "temperature": 0.7,
+  "max_length": 200
+}

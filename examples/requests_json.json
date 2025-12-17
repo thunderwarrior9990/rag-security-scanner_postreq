@@ -1,0 +1,62 @@
+[
+  {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/chat/completions",
+    "param_name": "prompt",
+    "api_format": "openai",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "additional_params": {
+      "model": "gpt-3.5-turbo",
+      "max_tokens": 150,
+      "temperature": 0.7
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://api.example.com/v1/ai/chat",
+    "param_name": "user_message",
+    "api_format": "generic",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-API-Version": "2.0"
+    },
+    "additional_params": {
+      "session_id": "test-session",
+      "context": "security-testing"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://api.example.com/search",
+    "param_name": "query",
+    "api_format": "generic",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "additional_params": {
+      "limit": 10,
+      "format": "json"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://custom-rag.example.com/ask",
+    "param_name": "question",
+    "api_format": "custom",
+    "body_template": {
+      "query": {
+        "type": "natural_language",
+        "text": "PAYLOAD_HERE"
+      },
+      "options": {
+        "use_context": true,
+        "max_results": 5
+      }
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+]
